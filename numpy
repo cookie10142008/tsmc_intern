@@ -19,11 +19,13 @@ print('shape :',array.shape)    # 行数和列数
 print('size:',array.size)   # 元素个数
 # size: 6
 
-
-
-
 ---------------轉置-------------------
-
-
+>>np.arange(6)
+array([0, 1, 2, 3, 4, 5])
+>>> a = np.arange(6).reshape((3, 2))
+>>> a
+array([[0, 1],
+       [2, 3],
+       [4, 5]])
 
 
