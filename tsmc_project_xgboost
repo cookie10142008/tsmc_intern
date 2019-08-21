@@ -1,0 +1,886 @@
+import pandas as pd
+import numpy as np
+import time
+from sklearn import tree
+from sklearn.decomposition import PCA
+from sklearn import preprocessing
+from sklearn.ensemble import RandomForestClassifier,AdaBoostClassifier,GradientBoostingClassifier
+from imblearn.over_sampling import SMOTE
+# hit rate(TPR = Recall)/ false alarm rate(FPR)
+# TPR = TP / P = TP / (TP+FN)
+# FPR = FP / N = FP / (FP + TN)
+def tpr_fpr(y_test,predictions):
+    tn, fp, fn, tp = confusion_matrix(y_test,predictions).ravel()
+    print('tn:', tn, 'fp:', fp, 'fn:', fn, 'tp:', tp)
+    print('Hit rate:',tp/(tp+fn),'\nFalse alarm rate:',fp/(fp+tn))
+    return (tp/(tp+fn),fp/(fp+tn))
+def PCA(sql_raw_data_fillna, n_components = 46):
+    from sklearn.decomposition import PCA
+    pca = PCA(n_components)
+    X = sql_raw_data_fillna.iloc[:,:-1]
+    pca.fit(X) # 用PCA降維
+    # 列印降維後的新特徵
+    variances = pca.explained_variance_
+#     print(variances) # 可以理解成該特徵的重要性，後面三個數字非常小，即特徵不重要
+
+    # 故而可以為重要性設定一個閾值，小於該閾值的認為該特徵不重要，可刪除
+    thresh = 0.8
+    useful_features = variances > thresh
+#     print(useful_features) # 標記為True的表示重要特徵，要保留，False則刪除
+
+    useful_features_num = np.sum(useful_features) # 計算True的個數
+
+    # 進行PCA降維之後的新資料集為：
+    pca.n_components = useful_features_num # 即設定PCA的新特徵數量為n_components
+    PCA_X = pca.fit_transform(X)
+    return PCA_X
+#     print('before PCA, dataset shape: ', X.shape)
+#     print('after PCA, dataset shape: ', PCA_X.shape)
+# 讀取 sql 原始資料
+sql_raw_data_fixed = pd.read_excel('dataset/cim15p3_0711.xlsx')
+sql_raw_data = pd.read_excel('dataset/cim15p3_0711.xlsx')
+sql_raw_data # 9959 rows × 98 columns
+sql_raw_data.head(2)
+row_id	SNAP_ID	DBID	INSTANCE_NUMBER	SAMPLE_ID	SAMPLE_TIME	SESSION_ID	SESSION_SERIAL#	SESSION_TYPE	FLAGS	...	TM_DELTA_CPU_TIME	TM_DELTA_DB_TIME	DELTA_TIME	DELTA_READ_IO_REQUESTS	DELTA_WRITE_IO_REQUESTS	DELTA_READ_IO_BYTES	DELTA_WRITE_IO_BYTES	DELTA_INTERCONNECT_IO_BYTES	PGA_ALLOCATED	TEMP_SPACE_ALLOCATED
+0	822	15296	2159772369	1	54855409	11-JUL-19 01.58.00.981 AM	504	33189	FOREGROUND	16.0	...	11993177.0	12070097.0	1.905609e+09	11.0	NaN	180224.0	NaN	180224.0	2629632.0	NaN
+1	824	15296	2159772369	1	54855409	11-JUL-19 01.58.00.981 AM	5132	5231	FOREGROUND	16.0	...	15642621.0	15642601.0	1.895583e+09	NaN	NaN	NaN	NaN	NaN	3874816.0	NaN
+2 rows × 98 columns
+
+# 計算空值數大於7000的欄位
+empty_columns = []
+for col in sql_raw_data.columns:
+#     print(sql_raw_data[col].isna().sum(),col) 
+    if sql_raw_data[col].isna().sum() > 7000:
+        empty_columns.append(col)
+print(empty_columns,len(empty_columns))
+['PLSQL_ENTRY_OBJECT_ID', 'PLSQL_ENTRY_SUBPROGRAM_ID', 'PLSQL_OBJECT_ID', 'PLSQL_SUBPROGRAM_ID', 'QC_INSTANCE_ID', 'QC_SESSION_ID', 'QC_SESSION_SERIAL#', 'PX_FLAGS', 'EVENT', 'EVENT_ID', 'P3TEXT', 'WAIT_CLASS', 'WAIT_CLASS_ID', 'BLOCKING_SESSION', 'BLOCKING_SESSION_SERIAL#', 'BLOCKING_INST_ID', 'BLOCKING_HANGCHAIN_INFO', 'XID', 'REMOTE_INSTANCE#', 'ACTION', 'CLIENT_ID', 'ECID', 'DELTA_WRITE_IO_REQUESTS', 'DELTA_WRITE_IO_BYTES', 'TEMP_SPACE_ALLOCATED'] 25
+# 刪除沒幫助的欄位
+sql_raw_data.drop(columns=['row_id','DBID','SAMPLE_TIME','SQL_EXEC_START']+ empty_columns, inplace = True)
+# 看每個欄位的種類計數
+# for col in sql_raw_data.columns:
+#     print(sql_raw_data[col].value_counts())
+# 類別型轉數值型變數
+sql_raw_data = pd.get_dummies(sql_raw_data) 
+sql_raw_data
+# truncate time 的尾端
+cpu_df = pd.read_csv('dataset/20190711_CIMCPU.csv')
+cpu_df.head(10)
+
+truncate_time = [] # cim15p3_0711 各sql時間點的 truncate
+for i in range(len(sql_raw_data_fixed['SAMPLE_TIME'])):
+    truncate_time.append(sql_raw_data_fixed['SAMPLE_TIME'][i][:-10])
+    
+truncate_time.sort()
+# sql_raw_data['truncate_time'] = truncate_time
+# sql_raw_data['truncate_time'].unique() # 720 個時間點
+
+# 檢查時間有沒有對上
+print(cpu_df['detectTime'][60][-8:-3]==truncate_time[0][-5:].replace('.',':'))
+True
+# 建 7/11 各時間點的 CPU 使用率 字典
+time_cpu_dict = {}
+for detectTime,cpu in zip(cpu_df['detectTime'],cpu_df['result']):
+    time_cpu_dict[detectTime[-8:-3]] = cpu
+    print(detectTime[-8:-3],cpu)
+cpu_for_sql = []
+for time in truncate_time:
+    print(time_cpu_dict[time[-5:].replace('.',':')])
+    cpu_for_sql.append(time_cpu_dict[time[-5:].replace('.',':')])
+# 加入 cpu 使用率 欄位
+sql_raw_data['cpu usage'] = cpu_for_sql
+sql_raw_data
+# sql_raw_data_dropna = sql_raw_data.dropna() # 直接刪除所有空值(任一欄有出現空值的列都刪除)
+# sql_raw_data_dropna.drop(columns=['SQL_EXEC_START'], inplace = True)
+
+sql_raw_data_fillna = sql_raw_data.fillna(0)
+sql_raw_data_fillna
+# 特徵選取：cpu使用量、sql 相關性分析
+import time
+start = time.time()
+
+# corr_df = sql_raw_data.corr()
+corr_df = sql_raw_data_fillna.corr()
+
+end = time.time()
+
+
+print('時間',end - start)
+corr_df
+# get corr > 0.1 bet all features and cpu usage
+for col,corr in zip(corr_df.columns,corr_df['cpu usage']):
+#     if corr > 0.04 or corr < -0.1:
+#         print(corr,col)
+    if col == 'DELTA_READ_IO_REQUESTS' or col == 'DELTA_READ_IO_BYTES' or col == 'SQL_ID_90zk81dnuc7gq' or col == 'TOP_LEVEL_SQL_ID_90zk81dnuc7gq' or col == 'SQL_PLAN_OPERATION_FIXED TABLE' or col == 'MACHINE_TSMC\F15OEAPCC1':
+        print(corr,col)
+-0.020012418689565662 DELTA_READ_IO_REQUESTS
+-0.02256107455710361 DELTA_READ_IO_BYTES
+0.012587824843232792 SQL_ID_90zk81dnuc7gq
+0.012587824843232792 TOP_LEVEL_SQL_ID_90zk81dnuc7gq
+0.016507756479866693 SQL_PLAN_OPERATION_FIXED TABLE
+0.026036413042902253 MACHINE_TSMC\F15OEAPCC1
+# 找 peak_法(一)_過門檻即為Peak
+
+first_cpu = True # get first cpu
+for time,cpu in zip(cpu_df['detectTime'],cpu_df['result']):
+#     if(first_cpu):
+#         pre_cpu = cpu
+#         first_cpu = False
+#         print(pre_cpu)
+#     else:
+#         medium_cpu = cpu
+# #         print(medium_cpu)
+#         if(medium_cpu - first_cpu) > 3:
+    if cpu > 8:
+        print(time,cpu)
+2019-07-11 00:57:09 11.0
+2019-07-11 01:58:09 13.0
+2019-07-11 01:59:09 10.0
+2019-07-11 02:20:11 9.0
+2019-07-11 02:31:10 10.0
+2019-07-11 02:43:10 10.0
+2019-07-11 02:50:10 9.0
+2019-07-11 02:55:10 12.0
+2019-07-11 14:54:15 11.0
+# # 找 peak_法(二)_分群找出Peak的分群標準 => cpu_x **4 可分程度找出Peak, ex: threshold = 5,8,10.....
+# # cpu: 0704_0718
+# from sklearn import cluster
+
+# # 讀入cpu: 0704_0718資料
+# CIMDB_P3_2 = pd.read_csv('dataset/CIMDBP3_2_0704_0718.csv') #15 days 
+# cpu_x = CIMDB_P3_2['result']
+# cpu_x = np.array(cpu_x)
+# cpu_x = cpu_x.reshape(-1,1) # 列轉欄
+
+# cpu_for_cluster = np.concatenate((cpu_x,cpu_x **4),axis=1)
+
+# # KMeans 演算法
+# kmeans_fit = cluster.KMeans(n_clusters = 2).fit(cpu_for_cluster)
+
+# # 印出分群結果
+# cluster_labels = kmeans_fit.labels_
+# peak_label = cluster_labels
+# print("分群結果：")
+# print(cluster_labels)
+# print("---")
+
+
+# for time,cpu,i in zip(CIMDB_P3_2['detectTime'],CIMDB_P3_2['result'],cluster_labels):
+#     if i==1: # 有異常(peak)
+#         print(time,cpu)
+a = np.arange(6)
+a
+array([0, 1, 2, 3, 4, 5])
+cpu_x = np.array(cpu_x)
+cpu_x
+array([[2.],
+       [3.],
+       [2.],
+       ...,
+       [1.],
+       [2.],
+       [3.]])
+# cpu_x = cpu_x.reshape(-1,1) # 列轉欄
+# cpu_x
+cpu_for_sql
+# 找 peak_法(二)_分群找出Peak的分群標準 => cpu_x ** 可分程度找出Peak, ex: threshold = .....
+# cpu: 7/11
+from sklearn import cluster
+
+# 讀入CPU Usage資料
+CPU_7_11 = pd.read_csv('dataset/20190711_CIMCPU.csv') # 7/11
+cpu_x = CPU_7_11['result']
+cpu_x = np.array(cpu_x)
+cpu_x = cpu_x.reshape(-1,1) # 全部元素轉成一欄多列
+
+cpu_for_cluster = np.concatenate((cpu_x,cpu_x **3),axis=1)
+
+# KMeans 演算法
+kmeans_fit = cluster.KMeans(n_clusters = 2).fit(cpu_for_cluster)
+
+# 印出分群結果
+cluster_labels = kmeans_fit.labels_
+peak_label = cluster_labels
+print("分群結果：")
+print(cluster_labels)
+print("---")
+
+
+for time,cpu,i in zip(CPU_7_11['detectTime'],CPU_7_11['result'],cluster_labels):
+    if i==1: # 有異常(peak)
+        print(time,cpu)
+分群結果：
+[0 0 0 ... 0 0 0]
+---
+2019-07-11 00:57:09 11.0
+2019-07-11 01:58:09 13.0
+2019-07-11 01:59:09 10.0
+2019-07-11 02:20:11 9.0
+2019-07-11 02:31:10 10.0
+2019-07-11 02:43:10 10.0
+2019-07-11 02:50:10 9.0
+2019-07-11 02:55:10 12.0
+2019-07-11 14:54:15 11.0
+# Todo:從 peak時間點挑出sql => y:出現peak與否 分類
+# for i in cluster_labels:
+#     print(i)
+len(cluster_labels) # 1029
+1029
+# 建 7/11字典: 各時間點的 偵測peak與否  
+time_peak_dict = {}
+for detectTime,peak in zip(cpu_df['detectTime'],cluster_labels):
+    time_peak_dict[detectTime[-8:-3]] = peak
+    print(detectTime[-8:-3],peak)
+peak_for_sql = [] # cim15p3_0711 各時間點的 sql是否造成 peak
+for time in truncate_time:
+    print(time_peak_dict[time[-5:].replace('.',':')])
+    peak_for_sql.append(time_peak_dict[time[-5:].replace('.',':')])
+# 增加 peak_show_up 欄位
+sql_raw_data['peak_show_up'] = peak_for_sql
+sql_raw_data_fillna['peak_show_up'] = peak_for_sql
+# 降維
+# sql_raw_data.shape
+
+
+
+
+
+
+
+# 分類預測是否此 sql會出現 peak
+# todo: 資料對不起來 ??
+# sql_raw_data_fillna.corr()
+# 移除 cpu 使用率 欄位
+sql_raw_data_fillna.drop(columns=['cpu usage'],inplace = True)
+sql_raw_data_fillna
+from sklearn.decomposition import PCA
+pca = PCA(n_components = 46)
+X = sql_raw_data_fillna.iloc[:,:-1]
+pca.fit(X) # 用PCA降維
+# 列印降維後的新特徵
+variances = pca.explained_variance_
+print(variances) # 可以理解成該特徵的重要性，後面三個數字非常小，即特徵不重要
+
+# 故而可以為重要性設定一個閾值，小於該閾值的認為該特徵不重要，可刪除
+thresh = 0.8
+useful_features = variances > thresh
+print(useful_features) # 標記為True的表示重要特徵，要保留，False則刪除
+
+useful_features_num = np.sum(useful_features) # 計算True的個數
+
+# 進行PCA降維之後的新資料集為：
+pca.n_components = useful_features_num # 即設定PCA的新特徵數量為n_components
+PCA_X = pca.fit_transform(X)
+# print('before PCA, dataset shape: ', X.shape)
+# print('after PCA, dataset shape: ', PCA_X.shape)
+[3.56515992e+37 3.26694087e+28 1.17423720e+26 1.66329196e+22
+ 5.09899430e+21 4.87981231e+19 2.67280384e+19 2.09738235e+18
+ 1.13681140e+18 5.99239609e+17 2.36035248e+16 8.26358890e+14
+ 1.63167714e+14 1.44005251e+14 9.77744701e+12 1.22266907e+12
+ 5.96898174e+11 6.80101607e+10 4.08907881e+08 3.61177715e+08
+ 3.31759442e+08 7.57650824e+07 3.16398255e+07 2.63510563e+07
+ 3.08159053e+06 2.19731334e+06 3.55946309e+05 3.55946309e+05
+ 3.55946309e+05 3.55946309e+05 3.55946309e+05 3.55946309e+05
+ 3.55946309e+05 3.55946309e+05 3.55946309e+05 3.55946309e+05
+ 3.55946309e+05 3.55946309e+05 3.55946309e+05 3.55946309e+05
+ 3.55946309e+05 3.55946309e+05 3.55946309e+05 3.55946309e+05
+ 3.55946309e+05 3.55946309e+05]
+[ True  True  True  True  True  True  True  True  True  True  True  True
+  True  True  True  True  True  True  True  True  True  True  True  True
+  True  True  True  True  True  True  True  True  True  True  True  True
+  True  True  True  True  True  True  True  True  True  True]
+# 重新取資料 X
+# X = sql_raw_data_fillna.iloc[:,:-1]
+# 正規化
+# PCA_X = preprocessing.scale(PCA_X)
+C:\Users\WHLINZO\AppData\Local\Continuum\anaconda3\lib\site-packages\sklearn\preprocessing\data.py:180: UserWarning: Numerical issues were encountered when centering the data and might not be solved. Dataset may contain too large values. You may need to prescale your features.
+  warnings.warn("Numerical issues were encountered "
+# 去除 cpu usage，因為 peak是由cpu 計算出來的
+print('sql_raw_data_fillna 維度：',sql_raw_data_fillna.shape) # (9959, 1534)
+sql_raw_data_fillna 維度： (9959, 1534)
+sql_raw_data_fillna
+PCA_X
+PCA(copy=True, iterated_power='auto',
+  n_components=      SNAP_ID  INSTANCE_NUMBER  SAMPLE_ID  SESSION_ID  SESSION_SERIAL#  FLAGS  \
+0       15296                1   54855409         504            33189   16.0
+1       15296                1   54855409        5132             5231   16.0
+2       15296                1   54855409   ...0
+9958                                               0             0
+
+[9959 rows x 1534 columns],
+  random_state=None, svd_solver='auto', tol=0.0, whiten=False)
+from sklearn.model_selection import train_test_split
+from sklearn.svm import SVC
+from sklearn.metrics import classification_report,confusion_matrix
+
+# sql_raw_data_fillna_remove_CPU = sql_raw_data_fillna.drop(columns=['cpu usage'])
+# PCA_X = PCA(sql_raw_data_fillna_remove_CPU) # 降維
+PCA_X = PCA(sql_raw_data_fillna) # 降維
+PCA_X = preprocessing.scale(PCA_X) # 正規化
+y = sql_raw_data_fillna['peak_show_up']
+X_train, X_test, y_train, y_test = train_test_split(PCA_X,y, test_size=0.20, random_state=101)
+# X_train, X_test, y_train, y_test = train_test_split(temp,y, test_size=0.20, random_state=101)
+
+
+#---------------------------------
+# SMOTE
+sm = SMOTE(random_state=42, ratio = 1.0) # oversampling algo
+X_train, y_train = sm.fit_sample(X_train, y_train) # oversample train data
+
+#----------------------------------
+
+model = SVC() # todo:可調參數
+
+#使用Support Vector Classifier來建立模型
+model.fit(X_train,y_train)
+C:\Users\WHLINZO\AppData\Local\Continuum\anaconda3\lib\site-packages\sklearn\preprocessing\data.py:180: UserWarning: Numerical issues were encountered when centering the data and might not be solved. Dataset may contain too large values. You may need to prescale your features.
+  warnings.warn("Numerical issues were encountered "
+C:\Users\WHLINZO\AppData\Local\Continuum\anaconda3\lib\site-packages\sklearn\svm\base.py:196: FutureWarning: The default value of gamma will change from 'auto' to 'scale' in version 0.22 to account better for unscaled features. Set gamma explicitly to 'auto' or 'scale' to avoid this warning.
+  "avoid this warning.", FutureWarning)
+SVC(C=1.0, cache_size=200, class_weight=None, coef0=0.0,
+  decision_function_shape='ovr', degree=3, gamma='auto_deprecated',
+  kernel='rbf', max_iter=-1, probability=False, random_state=None,
+  shrinking=True, tol=0.001, verbose=False)
+predictions = model.predict(X_test)
+
+#載入classification_report & confusion_matrix來評估模型好壞
+cm = confusion_matrix(y_test,predictions)
+print(confusion_matrix(y_test,predictions))
+print('\n')
+print(classification_report(y_test,predictions))
+print('分數:',model.score(X_test,y_test))
+tpr_fpr(y_test,predictions)
+[[1855  115]
+ [  16    6]]
+
+
+              precision    recall  f1-score   support
+
+           0       0.99      0.94      0.97      1970
+           1       0.05      0.27      0.08        22
+
+   micro avg       0.93      0.93      0.93      1992
+   macro avg       0.52      0.61      0.52      1992
+weighted avg       0.98      0.93      0.96      1992
+
+分數: 0.9342369477911646
+tn: 1855 fp: 115 fn: 16 tp: 6
+Hit rate: 0.2727272727272727 
+False alarm rate: 0.0583756345177665
+(0.2727272727272727, 0.0583756345177665)
+stop
+# 不降維(no feature selection)
+from sklearn.model_selection import train_test_split
+from sklearn.svm import SVC
+from sklearn.metrics import classification_report,confusion_matrix
+
+X = sql_raw_data_fillna.iloc[:,:-1]
+# PCA_X = PCA(sql_raw_data_fillna) # 降維
+# PCA_X = preprocessing.scale(PCA_X) # 正規化
+X = preprocessing.scale(X) # 正規化
+y = sql_raw_data_fillna['peak_show_up']
+# X_train, X_test, y_train, y_test = train_test_split(PCA_X,y, test_size=0.20, random_state=101)
+X_train, X_test, y_train, y_test = train_test_split(X,y, test_size=0.20, random_state=101)
+
+
+#---------------------------------
+# SMOTE
+sm = SMOTE(random_state=42, ratio = 1.0) # oversampling algo
+X_train, y_train = sm.fit_sample(X_train, y_train) # oversample train data
+
+#----------------------------------
+
+model = SVC() # todo:可調參數
+
+#使用Support Vector Classifier來建立模型
+model.fit(X_train,y_train)
+C:\Users\WHLINZO\AppData\Local\Continuum\anaconda3\lib\site-packages\ipykernel_launcher.py:9: DataConversionWarning: Data with input dtype uint8, int64, uint64, float64 were all converted to float64 by the scale function.
+  if __name__ == '__main__':
+C:\Users\WHLINZO\AppData\Local\Continuum\anaconda3\lib\site-packages\sklearn\preprocessing\data.py:180: UserWarning: Numerical issues were encountered when centering the data and might not be solved. Dataset may contain too large values. You may need to prescale your features.
+  warnings.warn("Numerical issues were encountered "
+C:\Users\WHLINZO\AppData\Local\Continuum\anaconda3\lib\site-packages\sklearn\svm\base.py:196: FutureWarning: The default value of gamma will change from 'auto' to 'scale' in version 0.22 to account better for unscaled features. Set gamma explicitly to 'auto' or 'scale' to avoid this warning.
+  "avoid this warning.", FutureWarning)
+SVC(C=1.0, cache_size=200, class_weight=None, coef0=0.0,
+  decision_function_shape='ovr', degree=3, gamma='auto_deprecated',
+  kernel='rbf', max_iter=-1, probability=False, random_state=None,
+  shrinking=True, tol=0.001, verbose=False)
+predictions = model.predict(X_test)
+
+#載入classification_report & confusion_matrix來評估模型好壞
+cm = confusion_matrix(y_test,predictions)
+print(confusion_matrix(y_test,predictions))
+print('\n')
+print(classification_report(y_test,predictions))
+print('分數:',model.score(X_test,y_test))
+tpr_fpr(y_test,predictions)
+[[1639  331]
+ [  11   11]]
+
+
+              precision    recall  f1-score   support
+
+           0       0.99      0.83      0.91      1970
+           1       0.03      0.50      0.06        22
+
+   micro avg       0.83      0.83      0.83      1992
+   macro avg       0.51      0.67      0.48      1992
+weighted avg       0.98      0.83      0.90      1992
+
+分數: 0.8283132530120482
+tn: 1639 fp: 331 fn: 11 tp: 11
+Hit rate: 0.5 
+False alarm rate: 0.16802030456852793
+(0.5, 0.16802030456852793)
+stop
+---------------------------------------------------------------------------
+NameError                                 Traceback (most recent call last)
+<ipython-input-38-4f76a9dad686> in <module>
+----> 1 stop
+
+NameError: name 'stop' is not defined
+# FOR Boosting, 做 PCA
+PCA_X = PCA(sql_raw_data_fillna)
+# PCA_X = preprocessing.scale(PCA_X) # 正規化
+X_train, X_test, y_train, y_test = train_test_split(PCA_X,y, test_size=0.20, random_state=101)
+# FOR Boosting, 不做 PCA
+X = sql_raw_data_fillna.iloc[:,:-1] # 不做正規化
+X_train, X_test, y_train, y_test = train_test_split(X,y, test_size=0.20, random_state=101)
+# DecisionTree
+for i in range(6):
+    # SMOTE
+    sm = SMOTE(random_state=41, ratio = 1.0) # oversampling algo
+    X_train_res, y_train_res = sm.fit_sample(X_train, y_train) # oversample train data
+
+    clf = tree.DecisionTreeClassifier()
+    peak_clf = clf.fit(X_train_res, y_train_res)
+
+    # 預測
+    test_y_predicted = peak_clf.predict(X_test)
+#     print(test_y_predicted)
+
+    # 標準答案
+    # print(y_test)
+
+
+    #載入classification_report & confusion_matrix來評估模型好壞
+
+#     print(confusion_matrix(y_test,test_y_predicted))
+#     print(classification_report(y_test,test_y_predicted))
+#     print('accuracy score:',peak_clf.score(X_test,y_test))
+    print(tpr_fpr(y_test,test_y_predicted))
+tn: 1949 fp: 21 fn: 18 tp: 4
+Hit rate: 0.18181818181818182 
+False alarm rate: 0.01065989847715736
+(0.18181818181818182, 0.01065989847715736)
+tn: 1950 fp: 20 fn: 18 tp: 4
+Hit rate: 0.18181818181818182 
+False alarm rate: 0.01015228426395939
+(0.18181818181818182, 0.01015228426395939)
+tn: 1946 fp: 24 fn: 19 tp: 3
+Hit rate: 0.13636363636363635 
+False alarm rate: 0.012182741116751269
+(0.13636363636363635, 0.012182741116751269)
+tn: 1948 fp: 22 fn: 18 tp: 4
+Hit rate: 0.18181818181818182 
+False alarm rate: 0.01116751269035533
+(0.18181818181818182, 0.01116751269035533)
+tn: 1946 fp: 24 fn: 18 tp: 4
+Hit rate: 0.18181818181818182 
+False alarm rate: 0.012182741116751269
+(0.18181818181818182, 0.012182741116751269)
+tn: 1949 fp: 21 fn: 19 tp: 3
+Hit rate: 0.13636363636363635 
+False alarm rate: 0.01065989847715736
+(0.13636363636363635, 0.01065989847715736)
+print(len(y_train_res[y_train_res==0]),len(y_train_res[y_train_res==1]))
+7882 7882
+# RandomForest
+# from sklearn.ensemble import RandomForestClassifier
+def PCA(sql_raw_data_fillna, n_components = 46):
+    from sklearn.decomposition import PCA
+    pca = PCA(n_components)
+    X = sql_raw_data_fillna.iloc[:,:-1]
+    pca.fit(X) # 用PCA降維
+    # 列印降維後的新特徵
+    variances = pca.explained_variance_
+#     print(variances) # 可以理解成該特徵的重要性，後面三個數字非常小，即特徵不重要
+
+    # 故而可以為重要性設定一個閾值，小於該閾值的認為該特徵不重要，可刪除
+    thresh = 0.8
+    useful_features = variances > thresh
+#     print(useful_features) # 標記為True的表示重要特徵，要保留，False則刪除
+
+    useful_features_num = np.sum(useful_features) # 計算True的個數
+
+    # 進行PCA降維之後的新資料集為：
+    pca.n_components = useful_features_num # 即設定PCA的新特徵數量為n_components
+    PCA_X = pca.fit_transform(X)
+    return PCA_X
+#     print('before PCA, dataset shape: ', X.shape)
+#     print('after PCA, dataset shape: ', PCA_X.shape)
+sm = SMOTE(random_state=100, ratio = 1.0) # oversampling algo
+X_train_res, y_train_res = sm.fit_sample(X_train, y_train) # oversample train data
+# Step 4: Fit a Random Forest model, " compared to "Decision Tree model, accuracy go up by 5%
+# 不要正規化
+
+# SMOTE
+sm = SMOTE(random_state=100, ratio = 1.0) # oversampling algo
+X_train_res, y_train_res = sm.fit_sample(X_train, y_train) # oversample train data
+print('RandomForest')
+clf = RandomForestClassifier(n_estimators=100, max_features="auto",random_state=0)
+# clf.fit(X_train, y_train)
+clf.fit(X_train_res, y_train_res)
+y_pred = clf.predict(X_test)
+# accuracy_score(y_test, y_pred)
+tpr_fpr(y_test, y_pred)
+# OUTPUT: 0.797
+
+
+
+# # Step 5: Fit a AdaBoost model, " compared to "Decision Tree model, accuracy go up by 10%
+print('AdaBoost')
+clf = AdaBoostClassifier(n_estimators=100)
+# clf.fit(X_train, y_train)
+clf.fit(X_train_res, y_train_res)
+y_pred = clf.predict(X_test)
+# accuracy_score(y_test, y_pred)
+tpr_fpr(y_test, y_pred)
+# # OUTPUT:0.833
+
+
+# # Step 6: Fit a Gradient Boosting model, " compared to "Decision Tree model, accuracy go up by 10%
+print('Gradient Boosting')
+clf = GradientBoostingClassifier(n_estimators=100)
+# clf.fit(X_train, y_train)
+clf.fit(X_train_res, y_train_res)
+y_pred = clf.predict(X_test)
+# accuracy_score(y_test, y_pred)
+tpr_fpr(y_test, y_pred)
+RandomForest
+tn: 1969 fp: 1 fn: 22 tp: 0
+Hit rate: 0.0 
+False alarm rate: 0.0005076142131979696
+AdaBoost
+tn: 1932 fp: 38 fn: 14 tp: 8
+Hit rate: 0.36363636363636365 
+False alarm rate: 0.019289340101522844
+Gradient Boosting
+tn: 1898 fp: 72 fn: 8 tp: 14
+Hit rate: 0.6363636363636364 
+False alarm rate: 0.03654822335025381
+(0.6363636363636364, 0.03654822335025381)
+# X.values
+y
+array([0, 0, 0, ..., 0, 0, 0], dtype=int64)
+import re
+regex = re.compile(r"\[|\]|<", re.IGNORECASE)
+
+sql_raw_data_fillna.columns = [regex.sub("_", col) if any(x in str(col) for x in set(('[', ']', '<'))) else col for col in sql_raw_data_fillna.columns.values]
+sql_raw_data_fillna.columns
+
+# FOR Boosting, 不做 PCA
+X = sql_raw_data_fillna.iloc[:,:-1] # 不做正規化
+y = sql_raw_data_fillna.iloc[:,-1]
+X = X.values # get all data from dataframe & convert it to ndarray 
+y = y.values
+X_train, X_test, y_train, y_test = train_test_split(X,y, test_size=0.20, random_state=101)
+# XGBoost
+from xgboost import XGBClassifier
+xgbc = XGBClassifier(
+        #樹的個數
+        n_estimators=200,
+        # 如同學習率
+        learning_rate= 0.2, 
+        # 構建樹的深度，越大越容易過擬合    
+        max_depth=6, #6 
+        # 隨機取樣訓練樣本 訓練例項的子取樣比
+        subsample=1, 
+        # 用於控制是否後剪枝的引數,越大越保守，一般0.1、0.2這樣子
+        gamma=0, 
+        # 控制模型複雜度的權重值的L2正則化項引數，引數越大，模型越不容易過擬合。
+        reg_lambda=1,  
+        
+        #最大增量步長，我們允許每個樹的權重估計。
+        max_delta_step=0,
+        # 生成樹時進行的列取樣 
+        colsample_bytree=1, 
+
+        # 這個引數預設是 1，是每個葉子裡面 h 的和至少是多少，對正負樣本不均衡時的 0-1 分類而言
+        # 假設 h 在 0.01 附近，min_child_weight 為 1 意味著葉子節點中最少需要包含 100 個樣本。
+        #這個引數非常影響結果，控制葉子節點中二階導的和的最小值，該引數值越小，越容易 overfitting。
+        min_child_weight=1, 
+
+        #隨機種子
+        seed=1000
+        
+        # L1 正則項引數
+#        reg_alpha=0,
+        
+        #如果取值大於0的話，在類別樣本不平衡的情況下有助於快速收斂。平衡正負權重
+        #scale_pos_weight=1,
+        
+        #多分類的問題 指定學習任務和相應的學習目標
+        #objective= 'multi:softmax', 
+        
+        # 類別數，多分類與 multisoftmax 並用
+        #num_class=10,
+        
+        # 設定成1則沒有執行資訊輸出，最好是設定為0.是否在執行升級時列印訊息。
+#        silent=0 ,
+        # cpu 執行緒數 預設最大
+#        nthread=4,
+    
+        #eval_metric= 'auc'
+)
+
+# xgbc = XGBClassifier()
+
+
+xgbc.fit(X_train_res, y_train_res)
+y_pred = xgbc.predict(X_test)
+# accuracy_score(y_test, y_pred)
+tpr_fpr(y_test, y_pred)
+# OUTPUT: 0.797
+tn: 1738 fp: 232 fn: 2 tp: 20
+Hit rate: 0.9090909090909091 
+False alarm rate: 0.11776649746192894
+(0.9090909090909091, 0.11776649746192894)
+print('X_train:',len(X_train),'\nX_train_res:',len(X_train_res),'\ny_train:',len(y_train),'\ny_train_res',len(y_train_res))
+X_train: 7967 
+X_train_res: 15764 
+y_train: 7967 
+y_train_res 15764
+print('y_train_0:',len(y_train[y_train==0]),'\ny_train_1:',len(y_train[y_train==1]))
+print('y_train_res_0:',len(y_train_res[y_train_res==0]),'\ny_train_res_1:',len(y_train_res[y_train_res==1]))
+y_train_0: 7882 
+y_train_1: 85
+y_train_res_0: 7882 
+y_train_res_1: 7882
+# 測試新資料
+new_sql_data = pd.read_excel('dataset/CIMDBP3_2_0704_0718.xlsx')
+new_sql_data
+# knn_沒有 PCA
+from sklearn import neighbors
+
+X = sql_raw_data_fillna.iloc[:,:-1] ## add
+X = preprocessing.scale(X) ##
+# PCA_X = preprocessing.scale(PCA_X) # 正規化
+
+
+X_train, X_test, y_train, y_test = train_test_split(X,y, test_size=0.20, random_state=101) #add
+# X_train, X_test, y_train, y_test = train_test_split(PCA_X,y, test_size=0.20, random_state=101) 
+
+
+sm = SMOTE(random_state=100, ratio = 1.0) # oversampling algo
+X_train_res, y_train_res = sm.fit_sample(X_train, y_train) # oversample train data
+print('knn')
+
+clf = neighbors.KNeighborsClassifier()
+# clf.fit(X_train, y_train)
+clf.fit(X_train_res, y_train_res)
+y_pred = clf.predict(X_test)
+# accuracy_score(y_test, y_pred)
+tpr_fpr(y_test, y_pred)
+C:\Users\WHLINZO\AppData\Local\Continuum\anaconda3\lib\site-packages\ipykernel_launcher.py:5: DataConversionWarning: Data with input dtype uint8, int64, uint64, float64 were all converted to float64 by the scale function.
+  """
+C:\Users\WHLINZO\AppData\Local\Continuum\anaconda3\lib\site-packages\sklearn\preprocessing\data.py:180: UserWarning: Numerical issues were encountered when centering the data and might not be solved. Dataset may contain too large values. You may need to prescale your features.
+  warnings.warn("Numerical issues were encountered "
+knn
+tn: 1835 fp: 135 fn: 22 tp: 0
+Hit rate: 0.0 
+False alarm rate: 0.06852791878172589
+(0.0, 0.06852791878172589)
+len(X)
+9959
+# test...
+# knn_沒有 PCA => 加入Random forest feature selection
+from sklearn import neighbors
+from sklearn.feature_selection import SelectFromModel
+
+X = sql_raw_data_fillna.iloc[:,:-1] ## add
+
+
+X_train, X_test, y_train, y_test = train_test_split(X,y, test_size=0.20, random_state=101) #add
+# X_train, X_test, y_train, y_test = train_test_split(PCA_X,y, test_size=0.20, random_state=101) 
+
+sel = SelectFromModel(RandomForestClassifier(n_estimators = 100))
+sel.fit(X_train, y_train)
+selected_feat = X_train.columns[(sel.get_support())]
+print(len(selected_feat))
+
+# 正規化
+X_train = preprocessing.scale(X_train) ##
+# y_train = preprocessing.scale(y_train) ##
+
+sm = SMOTE(random_state=100, ratio = 1.0) # oversampling algo
+X_train_res, y_train_res = sm.fit_sample(X_train, y_train) # oversample train data
+print('knn')
+
+clf = neighbors.KNeighborsClassifier()
+# clf.fit(X_train, y_train)
+clf.fit(X_train_res, y_train_res)
+y_pred = clf.predict(X_test)
+# accuracy_score(y_test, y_pred)
+tpr_fpr(y_test, y_pred)
+134
+C:\Users\WHLINZO\AppData\Local\Continuum\anaconda3\lib\site-packages\ipykernel_launcher.py:20: DataConversionWarning: Data with input dtype uint8, int64, uint64, float64 were all converted to float64 by the scale function.
+C:\Users\WHLINZO\AppData\Local\Continuum\anaconda3\lib\site-packages\sklearn\preprocessing\data.py:180: UserWarning: Numerical issues were encountered when centering the data and might not be solved. Dataset may contain too large values. You may need to prescale your features.
+  warnings.warn("Numerical issues were encountered "
+knn
+tn: 1970 fp: 0 fn: 22 tp: 0
+Hit rate: 0.0 
+False alarm rate: 0.0
+(0.0, 0.0)
+# 找出現peak的sql資料與cpu的相關性
+peak_cpu_corr = sql_raw_data[sql_raw_data['peak_show_up']==1].corr()
+for col,corr in zip(peak_cpu_corr.columns,peak_cpu_corr['cpu usage']):
+    if corr > 0.2 or corr < -0.2:
+        print(corr,col)
+# peak_cpu_corr['cpu usage']
+-0.5669282105106737 SNAP_ID
+0.287230674933852 DELTA_READ_IO_REQUESTS
+0.287230674933852 DELTA_READ_IO_BYTES
+-0.21356134848186595 SQL_ID_90zk81dnuc7gq
+-0.21356134848186595 TOP_LEVEL_SQL_ID_90zk81dnuc7gq
+0.2237795948207119 SQL_PLAN_OPERATION_FIXED TABLE
+0.23717906003963793 MACHINE_TSMC\F15OEAPCC1
+1.0 cpu usage
+# 找非peak的sql資料與cpu的相關性
+non_peak_cpu_corr = sql_raw_data[sql_raw_data['peak_show_up']==0].corr()
+for col,corr in zip(non_peak_cpu_corr.columns,non_peak_cpu_corr['cpu usage']):
+#     if corr > 0.1 or corr < -0.1:
+#         print(corr,col)
+    if col == 'DELTA_READ_IO_REQUESTS' or col == 'DELTA_READ_IO_BYTES' or col == 'SQL_ID_90zk81dnuc7gq' or col == 'TOP_LEVEL_SQL_ID_90zk81dnuc7gq' or col == 'SQL_PLAN_OPERATION_FIXED TABLE' or col == 'MACHINE_TSMC\F15OEAPCC1':
+        print(corr,col)
+-0.02165115009623114 DELTA_READ_IO_REQUESTS
+-0.028141370391175112 DELTA_READ_IO_BYTES
+0.011825180877755023 SQL_ID_90zk81dnuc7gq
+0.011825180877755023 TOP_LEVEL_SQL_ID_90zk81dnuc7gq
+0.004953916414184739 SQL_PLAN_OPERATION_FIXED TABLE
+0.005136976955609226 MACHINE_TSMC\F15OEAPCC1
+def plot_confusion_matrix(cm,
+                          target_names,
+                          title='Confusion matrix',
+                          cmap=None,
+                          normalize=True):
+    """
+    given a sklearn confusion matrix (cm), make a nice plot
+
+    Arguments
+    ---------
+    cm:           confusion matrix from sklearn.metrics.confusion_matrix
+
+    target_names: given classification classes such as [0, 1, 2]
+                  the class names, for example: ['high', 'medium', 'low']
+
+    title:        the text to display at the top of the matrix
+
+    cmap:         the gradient of the values displayed from matplotlib.pyplot.cm
+                  see http://matplotlib.org/examples/color/colormaps_reference.html
+                  plt.get_cmap('jet') or plt.cm.Blues
+
+    normalize:    If False, plot the raw numbers
+                  If True, plot the proportions
+
+    Usage
+    -----
+    plot_confusion_matrix(cm           = cm,                  # confusion matrix created by
+                                                              # sklearn.metrics.confusion_matrix
+                          normalize    = True,                # show proportions
+                          target_names = y_labels_vals,       # list of names of the classes
+                          title        = best_estimator_name) # title of graph
+
+    Citiation
+    ---------
+    http://scikit-learn.org/stable/auto_examples/model_selection/plot_confusion_matrix.html
+
+    """
+    import matplotlib.pyplot as plt
+    import numpy as np
+    import itertools
+
+    accuracy = np.trace(cm) / float(np.sum(cm))
+    misclass = 1 - accuracy
+
+    if cmap is None:
+        cmap = plt.get_cmap('Blues')
+
+    plt.figure(figsize=(4, 3))
+    plt.imshow(cm, interpolation='nearest', cmap=cmap)
+    plt.title(title)
+    plt.colorbar()
+
+    if target_names is not None:
+        tick_marks = np.arange(len(target_names))
+        plt.xticks(tick_marks, target_names, rotation=45)
+        plt.yticks(tick_marks, target_names)
+
+    if normalize:
+        cm = cm.astype('float') / cm.sum(axis=1)[:, np.newaxis]
+
+
+    thresh = cm.max() / 1.5 if normalize else cm.max() / 2
+    for i, j in itertools.product(range(cm.shape[0]), range(cm.shape[1])):
+        if normalize:
+            plt.text(j, i, "{:0.4f}".format(cm[i, j]),
+                     horizontalalignment="center",
+                     color="white" if cm[i, j] > thresh else "black")
+        else:
+            plt.text(j, i, "{:,}".format(cm[i, j]),
+                     horizontalalignment="center",
+                     color="white" if cm[i, j] > thresh else "black")
+
+
+    plt.tight_layout()
+    plt.ylabel('True label')
+    plt.xlabel('Predicted label\naccuracy={:0.4f}; misclass={:0.4f}'.format(accuracy, misclass))
+    plt.show()
+    
+plot_confusion_matrix(cm,[0,1],normalize=False)
+<Figure size 400x300 with 2 Axes>
+ 
+ 
+ 
+STOP#######################################################
+---------------------------------------------------------------------------
+NameError                                 Traceback (most recent call last)
+<ipython-input-59-6b404bf98026> in <module>
+----> 1 STOP#######################################################
+
+NameError: name 'STOP' is not defined
+# 計算各sql的 cpu使用頻率
+
+sql_usage = pd.DataFrame(columns = list(sql_raw_data.SQL_PLAN_HASH_VALUE.unique()))
+sql_usage
+# 取每個時間點各sql的使用頻率
+for time_pt in sql_raw_data['truncate_time'].unique(): 
+    mask = sql_raw_data['truncate_time'] == time_pt
+    print(sql_raw_data[mask].SQL_PLAN_HASH_VALUE.value_counts())
+    sql_cnt = sql_raw_data[mask].SQL_PLAN_HASH_VALUE.value_counts()
+
+    temp_dict = {}
+    for value,index in zip(sql_cnt.values,sql_cnt.index): # 建 dict
+        temp_dict[index] = value
+
+    sql_usage = sql_usage.append(temp_dict,ignore_index=True)
+
+
+
+
+# time_pt = sql_raw_data['truncate_time'].unique()[0]
+# mask = sql_raw_data['truncate_time'] == time_pt
+# sql_raw_data[mask].SQL_PLAN_HASH_VALUE.value_counts()
+# 計算各時間點 sql使用次數
+sql_usage.to_csv('sql_usage.csv')
+# len(sql_raw_data.SQL_PLAN_HASH_VALUE.unique()) # all sql
+all_sql = sql_raw_data.SQL_PLAN_HASH_VALUE.unique()
+all_sql
+sql_usage = pd.DataFrame(columns = list(sql_raw_data.SQL_PLAN_HASH_VALUE.unique()))
+sql_usage # 227個 SQL
+# sql_usage.append({1244351151:20},ignore_index=True)
+sql_usage.append(temp_dict,ignore_index=True)
+
+# np.zeros(len(sql_raw_data.SQL_PLAN_HASH_VALUE.unique()))
+
+# append({'Name' : 'Sahil' , 'Age' : 22} , ignore_index=True)
+df = pd.DataFrame({"a":[1, 2, 3, 4], "b":[5, 6, 7, 8],"c":[5, 6, 7, 8]}) 
+df.append({'a':20},ignore_index=True)
